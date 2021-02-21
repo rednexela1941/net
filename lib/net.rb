@@ -1,6 +1,7 @@
 #!/usr/bin/ruby
 require "rake_text"
 require "thread"
+require "graphviz"
 
 class RakeText
   alias analyze analyse
@@ -12,9 +13,10 @@ class FileLine
     @line = line
     @line_num = line_num
     @keywords = keywords
+    @node = nil
   end
 
-  attr_accessor :path, :line, :line_num, :keywords
+  attr_accessor :path, :line, :line_num, :keywords, :node
 
   def output
     puts "#{path}::#{line_num} #{line}"
@@ -23,10 +25,50 @@ class FileLine
   alias to_s output
 end
 
+class Graph
+  def initialize
+    @pairs = Hash.new
+  end
+
+  def add_pair(a, b)
+    if a == b then return end
+    min = if a < b then a else b end
+    max = if a < b then b else a end
+    @pairs[min] = Hash.new unless @pairs.has_key? min
+    if @pairs[min].has_key? max
+      @pairs[min][max] += 1
+    else
+      @pairs[min][max] = 1
+    end
+  end
+
+  def to_s
+    out = String.new
+    @pairs.each do |k, v|
+      out += "#{k}: #{v}\n"
+    end
+    out
+  end
+
+  def generate
+    viz = Graphviz::Graph.new "net"
+    nodes = Hash.new
+    @pairs.each do |k, hash|
+      nodes[k] = viz.add_node k unless nodes.has_key? k
+      hash.each do |sk, count|
+        nodes[sk] = viz.add_node sk unless nodes.has_key? sk
+        nodes[k].connect nodes[sk]
+      end
+    end
+    viz
+  end
+end
+
 class Net
   def initialize(dir)
     @root_dir = dir
     @rake = RakeText.new
+    @graph = Graph.new
   end
 
   attr_reader :root_dir
@@ -50,17 +92,24 @@ class Net
         summary = line.line[left..right].gsub(/^[\s]+/, "").gsub(/[\s]+$/, "")
         summary.gsub!(/[\s]+/, " ")
         output_lines.push "** [[file:#{line.path}::#{line.line_num}][#{summary}]]"
+        line.keywords.each do |kw|
+          @graph.add_pair k, kw
+        end
       end
     end
     write output_lines
-    nil
+    # puts "#@graph"
+    graph = @graph.generate
+    graph_path = File.join @root_dir, "graph.pdf"
+    Graphviz::output(graph, :path => graph_path)
+    graph_path
   end
 
   def walk_path(path)
     files = Array.new
     Dir.children(path).each do |child|
       fp = File.join path, child
-      if File.file?(fp) and not fp.match?(/net.org$/)
+      if File.file?(fp) and not fp.match?(/net.org$/) and fp.match?(/(org|txt)$/)
         files.push fp
       elsif File.directory?(fp)
         files.concat walk_path(fp)
@@ -115,12 +164,9 @@ class Net
         File.foreach(path) do |line|
           line.gsub!(/\*+/, "")
           keys = @rake.analyze line, RakeText.SMART
-          words = []          
+          words = []
           keys.each do |k|
             words.push k[0] if k[0].match?(/[\w]+/)
-            # k[0].split(" ").each do |word|
-            #   words.push word if word.match?(/[\w]+/)
-            # end
           end
           out.push FileLine.new(path, line, line_num, words) unless keys.empty?
           line_num += 1
